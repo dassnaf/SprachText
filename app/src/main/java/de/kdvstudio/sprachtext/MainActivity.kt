@@ -5,19 +5,24 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Bundle
 import android.speech.SpeechRecognizer
+import android.text.InputType
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 
-/** Einrichtungs-Bildschirm: Berechtigung, Sprachpaket, Testdatei. */
+/** Einrichtungs-Bildschirm: Berechtigung, Sprachpaket, Gemini-Key, Testdatei. */
 class MainActivity : Activity() {
 
     private lateinit var info: TextView
+    private lateinit var keyField: EditText
     private var dl: SpeechRecognizer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,8 +40,8 @@ class MainActivity : Activity() {
             textSize = 15f
             setLineSpacing(dp(3).toFloat(), 1f)
             text = "So geht’s: In WhatsApp eine Sprachnachricht lange drücken → Teilen → „SprachText“. " +
-                "Die Nachricht wird komplett auf deinem Handy in Text umgewandelt, nichts geht ins Internet.\n\n" +
-                "Einmalig einrichten:"
+                "Die Sprache wird auf deinem Handy in Text umgewandelt. Nur für die Zusammenfassung " +
+                "wird der Text (nicht das Audio) an Gemini geschickt.\n\nEinmalig einrichten:"
         }, lp(16))
 
         col.addView(button("1. Berechtigung erteilen") {
@@ -50,14 +55,36 @@ class MainActivity : Activity() {
                 dl = SpeechRecognizer.createOnDeviceSpeechRecognizer(this).also {
                     it.triggerModelDownload(Transcriber.languageIntent())
                 }
-                info.text = "Download angestoßen. Falls ein Dialog erscheint, bestätigen."
+                Toast.makeText(this, "Download angestoßen", Toast.LENGTH_SHORT).show()
             }
         }, lp(8))
+
+        col.addView(TextView(this).apply {
+            text = "3. Gemini-API-Key (kostenlos)"
+            textSize = 16f
+            setTypeface(null, Typeface.BOLD)
+        }, lp(20))
+        col.addView(button("Kostenlosen Key bei Google holen") {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey")))
+        }, lp(8))
+        keyField = EditText(this).apply {
+            hint = "Key hier einfügen"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            isSingleLine = true
+            setText(Settings.geminiKey(this@MainActivity))
+        }
+        col.addView(keyField, lp(8))
+        col.addView(button("Key speichern") {
+            Settings.setGeminiKey(this, keyField.text.toString())
+            Toast.makeText(this, "Gespeichert", Toast.LENGTH_SHORT).show()
+            refresh()
+        }, lp(4))
+
         col.addView(button("Test: Audiodatei auswählen") {
             startActivityForResult(
                 Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("audio/*"), 2
             )
-        }, lp(8))
+        }, lp(20))
 
         info = TextView(this).apply { textSize = 14f }
         col.addView(info, lp(16))
@@ -68,9 +95,13 @@ class MainActivity : Activity() {
     override fun onResume() { super.onResume(); refresh() }
 
     private fun refresh() {
+        if (!::info.isInitialized) return
         val perm = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val offline = SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
-        info.text = "Berechtigung: ${if (perm) "✅" else "❌"}\nOffline-Erkennung verfügbar: ${if (offline) "✅" else "❌"}"
+        val key = Settings.geminiKey(this).isNotEmpty()
+        info.text = "Berechtigung: ${if (perm) "✅" else "❌"}\n" +
+            "Offline-Erkennung verfügbar: ${if (offline) "✅" else "❌"}\n" +
+            "Gemini-Key hinterlegt: ${if (key) "✅" else "❌"}"
     }
 
     @Deprecated("Activity-API")

@@ -4,8 +4,8 @@ import kotlin.math.sqrt
 
 /** Lokale, extraktive Zusammenfassung: wählt die aussagekräftigsten Sätze als Stichpunkte. */
 object Summarizer {
-    private const val MAX_BULLETS = 4
-    private const val MAX_WORDS = 18
+    private const val MAX_BULLETS = 3
+    private const val MAX_WORDS = 14
 
     private val STOP = setOf(
         "der", "die", "das", "und", "oder", "aber", "ich", "du", "er", "sie", "es", "wir", "ihr",
@@ -53,7 +53,13 @@ object Summarizer {
         return if (w.size <= 30) listOf(s) else w.chunked(15).map { it.joinToString(" ") }
     }
 
-    private fun tidy(s: String): String {
+    private val FILLER = Regex(
+        "\\b(äh+m?|ähm|öhm|halt|quasi|sozusagen|irgendwie|eigentlich|weißt du|weisst du|na ja|naja|also)\\b[,]?\\s*",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun tidy(raw: String): String {
+        val s = raw.replace(FILLER, "").replace(Regex("\\s+"), " ").trim().ifEmpty { raw }
         val w = s.split(Regex("\\s+"))
         val t = if (w.size > MAX_WORDS) w.take(MAX_WORDS).joinToString(" ") + " …" else s
         return t.replaceFirstChar { it.uppercase() }

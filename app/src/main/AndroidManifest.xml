@@ -3,6 +3,7 @@
 
     <!-- Androids Spracherkennung verlangt diese Berechtigung, die App nimmt aber nichts auf -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <queries>
         <intent>

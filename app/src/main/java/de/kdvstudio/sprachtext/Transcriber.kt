@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioFormat
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -12,11 +14,11 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** Schickt das PCM-Audio an Androids Offline-Spracherkennung (läuft komplett auf dem Gerät). */
+/** Erkennt die Abschnitte nacheinander mit Androids Offline-Spracherkennung. */
 class Transcriber(private val ctx: Context, private val cb: Callback) {
 
     interface Callback {
-        fun onProgress(text: String)
+        fun onProgress(done: Int, total: Int)
         fun onDone(segments: List<String>)
         fun onError(msg: String)
     }
@@ -28,8 +30,12 @@ class Transcriber(private val ctx: Context, private val cb: Callback) {
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, LANGUAGE)
     }
 
+    private val main = Handler(Looper.getMainLooper())
     private var rec: SpeechRecognizer? = null
     private var readFd: ParcelFileDescriptor? = null
+    private var chunks: List<ShortArray> = emptyList()
+    private var index = 0
+    private var retried = false
     private val segments = ArrayList<String>()
     private var finished = false
 
@@ -42,22 +48,17 @@ class Transcriber(private val ctx: Context, private val cb: Callback) {
         override fun onPartialResults(partialResults: Bundle?) {}
         override fun onEvent(eventType: Int, params: Bundle?) {}
 
-        override fun onSegmentResults(segmentResults: Bundle) {
-            addResult(segmentResults)
-            cb.onProgress(segments.joinToString(" "))
-        }
-
-        override fun onEndOfSegmentedSession() = finish()
-
         override fun onResults(results: Bundle?) {
-            if (results != null) addResult(results)
-            finish()
+            results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+                ?.let { segments.add(it) }
+            advance()
         }
 
         override fun onError(error: Int) {
             when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH,
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> finish()
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> advance()
                 SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
                 SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
                     rec?.triggerModelDownload(languageIntent())
@@ -65,18 +66,36 @@ class Transcriber(private val ctx: Context, private val cb: Callback) {
                 }
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
                     fail("Mikrofon-Berechtigung fehlt (öffne die App einmal und erteile sie).")
-                else ->
-                    if (segments.isNotEmpty()) finish()
-                    else fail("Spracherkennung fehlgeschlagen (Code $error).")
+                else -> {
+                    if (!retried) { retried = true; index--; main.postDelayed({ next() }, 400) }
+                    else advance()
+                }
             }
         }
     }
 
     fun start(pcm: ShortArray) {
         if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)) {
-            fail("Auf diesem Gerät ist keine Offline-Spracherkennung verfügbar.")
-            return
+            fail("Auf diesem Gerät ist keine Offline-Spracherkennung verfügbar."); return
         }
+        chunks = Chunker.split(pcm)
+        if (chunks.isEmpty()) { fail("Keine Sprache erkannt."); return }
+        rec = SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx).apply { setRecognitionListener(listener) }
+        next()
+    }
+
+    private fun advance() {
+        retried = false
+        main.postDelayed({ next() }, 150)
+    }
+
+    private fun next() {
+        if (finished) return
+        closeFd()
+        if (index >= chunks.size) { finish(); return }
+        cb.onProgress(index + 1, chunks.size)
+        val chunk = chunks[index]
+        index++
         val pipe = ParcelFileDescriptor.createPipe()
         readFd = pipe[0]
         val intent = languageIntent()
@@ -85,13 +104,10 @@ class Transcriber(private val ctx: Context, private val cb: Callback) {
             .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
             .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
             .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, AudioDecoder.TARGET_RATE)
-            .putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_AUDIO_SOURCE)
-
-        rec = SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx).apply {
-            setRecognitionListener(listener)
-            startListening(intent)
-        }
-        Thread { writePcm(pcm, pipe[1]) }.start()
+            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+        rec?.startListening(intent)
+        Thread { writePcm(chunk, pipe[1]) }.start()
     }
 
     private fun writePcm(pcm: ShortArray, fd: ParcelFileDescriptor) {
@@ -108,14 +124,13 @@ class Transcriber(private val ctx: Context, private val cb: Callback) {
                 }
             }
         } catch (e: IOException) {
-            // Erkennung wurde abgebrochen – nichts zu tun
+            // Erkennung für diesen Abschnitt beendet
         }
     }
 
-    private fun addResult(b: Bundle) {
-        b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            ?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
-            ?.let { segments.add(it) }
+    private fun closeFd() {
+        try { readFd?.close() } catch (e: IOException) {}
+        readFd = null
     }
 
     private fun finish() {
@@ -133,8 +148,9 @@ class Transcriber(private val ctx: Context, private val cb: Callback) {
     }
 
     fun destroy() {
+        finished = true
+        main.removeCallbacksAndMessages(null)
         rec?.destroy(); rec = null
-        try { readFd?.close() } catch (e: IOException) {}
-        readFd = null
+        closeFd()
     }
 }

@@ -10,8 +10,16 @@ android {
         applicationId = "de.kdvstudio.sprachtext"
         minSdk = 33
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+    }
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("sprachtext.keystore")
+            storePassword = "sprachtext"
+            keyAlias = "sprachtext"
+            keyPassword = "sprachtext"
+        }
     }
     buildTypes { release { isMinifyEnabled = false } }
     compileOptions {

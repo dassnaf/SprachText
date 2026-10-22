@@ -68,20 +68,40 @@ class ShareActivity : Activity(), Transcriber.Callback {
         }.start()
     }
 
-    override fun onProgress(text: String) {
-        status.text = "Wird transkribiert … " + text.takeLast(60)
+    override fun onProgress(done: Int, total: Int) {
+        status.text = if (total > 1) "Wird transkribiert … Teil $done von $total" else "Wird transkribiert …"
     }
 
     override fun onDone(segments: List<String>) {
         fullText = segments.joinToString(" ")
-        progress.visibility = View.GONE
-        status.text = "Zusammenfassung"
-        status.setTypeface(null, Typeface.BOLD)
-        bulletsView.text = Summarizer.bullets(segments).joinToString("\n") { "•  $it" }
-        bulletsView.visibility = View.VISIBLE
         fullView.text = fullText
         toggle.visibility = View.VISIBLE
         actions.visibility = View.VISIBLE
+
+        val key = Settings.geminiKey(this)
+        if (key.isEmpty()) {
+            showSummary(Summarizer.bullets(segments), "Zusammenfassung (lokal – kein Gemini-Key hinterlegt)")
+            return
+        }
+        status.text = "Wird zusammengefasst …"
+        Thread {
+            val result = try {
+                Gemini.summarize(key, fullText) to "Zusammenfassung"
+            } catch (e: Exception) {
+                Summarizer.bullets(segments) to "Zusammenfassung (lokal – ${e.message ?: "Gemini nicht erreichbar"})"
+            }
+            runOnUiThread {
+                if (!isFinishing) showSummary(result.first, result.second)
+            }
+        }.start()
+    }
+
+    private fun showSummary(bullets: List<String>, title: String) {
+        progress.visibility = View.GONE
+        status.text = title
+        status.setTypeface(null, Typeface.BOLD)
+        bulletsView.text = bullets.joinToString("\n") { "•  $it" }
+        bulletsView.visibility = View.VISIBLE
     }
 
     override fun onError(msg: String) {
